@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trinity-grade-7-scales-v3';
+const CACHE_NAME = 'trinity-grade-7-scales-v4';
 const APP_SHELL = [
   './',
   './index.html',

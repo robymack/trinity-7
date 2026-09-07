@@ -51,6 +51,7 @@
           analyticsTab.click();
           ok(practiceView.hidden, 'practice view should be hidden');
           ok(!analyticsView.hidden, 'analytics view should be visible');
+          ok(frameWindow.getComputedStyle(practiceView).display === 'none', 'practice view should not remain visible beneath analytics');
           ok(analyticsView.textContent.includes('Your practice'), 'analytics overview should render');
         });
 
@@ -58,6 +59,13 @@
           practiceTab.click();
           ok(!practiceView.hidden, 'practice view should be visible');
           ok(analyticsView.hidden, 'analytics view should be hidden');
+          ok(frameWindow.getComputedStyle(analyticsView).display === 'none', 'analytics view should not remain visible beneath practice');
+        });
+
+        test('Score buttons use ten distinct calm success colours', () => {
+          const colors = [...documentUnderTest.querySelectorAll('[data-score]')]
+            .map((button) => frameWindow.getComputedStyle(button).backgroundColor);
+          ok(new Set(colors).size === 10, 'each score button should have its own colour');
         });
 
         test('Navigation produces no uncaught runtime error', () => {
