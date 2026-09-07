@@ -1,0 +1,13 @@
+/*
+ * Phase 1 intentionally provides only a neutral application shell.
+ * Practice-screen design belongs to Phase 4.
+ */
+
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}

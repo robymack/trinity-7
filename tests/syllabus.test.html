@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grade 7 syllabus tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      .pass { color: #176b32; }
+      .fail { color: #a10f1f; }
+      li { margin-block: 0.4rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Grade 7 syllabus tests</h1>
+    <p id="summary">Running…</p>
+    <ul id="results"></ul>
+
+    <script type="module">
+      import {
+        ARTICULATIONS,
+        DYNAMICS,
+        EXPECTED_CARD_COUNT,
+        EXPECTED_CARD_COUNTS_BY_GROUP,
+        GRADE_7_CARDS,
+        GRADE_7_SYLLABUS,
+        createCardId,
+        generateCards,
+        getCardCountsByGroup,
+        validateCards,
+        validateSyllabus,
+      } from '../syllabus.js';
+
+      const results = [];
+      const output = document.querySelector('#results');
+      const summary = document.querySelector('#summary');
+
+      function equal(actual, expected, message) {
+        if (actual !== expected) {
+          throw new Error(`${message}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+        }
+      }
+
+      function deepEqual(actual, expected, message) {
+        equal(JSON.stringify(actual), JSON.stringify(expected), message);
+      }
+
+      function ok(value, message) {
+        if (!value) throw new Error(message);
+      }
+
+      function test(name, callback) {
+        try {
+          callback();
+          results.push({ name, passed: true });
+        } catch (error) {
+          results.push({ name, passed: false, error: error.message });
+        }
+      }
+
+      function cardsFor(itemId) {
+        return GRADE_7_CARDS.filter((card) => card.syllabusItemId === itemId);
+      }
+
+      test('the declarative syllabus validates', () => {
+        equal(validateSyllabus(GRADE_7_SYLLABUS), true, 'syllabus validation result');
+      });
+
+      test('exactly 122 cards are generated', () => {
+        equal(GRADE_7_CARDS.length, EXPECTED_CARD_COUNT, 'generated card count');
+      });
+
+      test('card IDs are unique', () => {
+        equal(new Set(GRADE_7_CARDS.map((card) => card.id)).size, GRADE_7_CARDS.length, 'unique card IDs');
+      });
+
+      test('generation is deterministic and card IDs are stable', () => {
+        const regenerated = generateCards(GRADE_7_SYLLABUS);
+        deepEqual(
+          regenerated.map((card) => card.id),
+          GRADE_7_CARDS.map((card) => card.id),
+          'regenerated card IDs',
+        );
+        equal(createCardId(GRADE_7_SYLLABUS[1], 'legato', 'f'), 'scale:e-major-scale:legato:f', 'E major ID');
+        ok(
+          GRADE_7_CARDS.some((card) => card.id === 'arpeggio:e-major-contrary-motion:legato:none'),
+          'contrary-motion special ID is present',
+        );
+      });
+
+      test('each syllabus group has its expected card count', () => {
+        deepEqual(getCardCountsByGroup(GRADE_7_CARDS), EXPECTED_CARD_COUNTS_BY_GROUP, 'group card counts');
+      });
+
+      test('each standard item has all eight requested conditions', () => {
+        const standardItems = GRADE_7_SYLLABUS.filter((item) =>
+          item.group === 'standard-scales' || item.group === 'standard-arpeggios',
+        );
+        for (const item of standardItems) {
+          const cards = cardsFor(item.id);
+          equal(cards.length, 8, `${item.id} card count`);
+          equal(new Set(cards.map((card) => card.dynamic)).size, DYNAMICS.length, `${item.id} dynamic count`);
+          equal(new Set(cards.map((card) => card.articulation)).size, ARTICULATIONS.length, `${item.id} articulation count`);
+          for (const dynamic of DYNAMICS) {
+            for (const articulation of ARTICULATIONS) {
+              ok(
+                cards.some((card) => card.dynamic === dynamic && card.articulation === articulation),
+                `${item.id} has ${articulation}/${dynamic}`,
+              );
+            }
+          }
+        }
+      });
+
+      test('fixed special items generate exactly one correctly constrained card', () => {
+        const thirds = cardsFor('e-major-scale-in-thirds');
+        equal(thirds.length, 1, 'E major in thirds card count');
+        deepEqual(
+          { dynamic: thirds[0].dynamic, articulation: thirds[0].articulation, octaves: thirds[0].octaves, hands: thirds[0].hands, tempo: thirds[0].recommendedTempoQpm },
+          { dynamic: 'mf', articulation: 'legato', octaves: 2, hands: 'separately', tempo: 70 },
+          'E major in thirds metadata',
+        );
+
+        const contrary = cardsFor('e-major-contrary-motion');
+        equal(contrary.length, 1, 'E major contrary-motion arpeggio card count');
+        deepEqual(
+          { dynamic: contrary[0].dynamic, articulation: contrary[0].articulation, octaves: contrary[0].octaves, motion: contrary[0].motion, tempo: contrary[0].recommendedTempoQpm },
+          { dynamic: null, articulation: 'legato', octaves: 2, motion: 'contrary', tempo: null },
+          'E major contrary-motion metadata',
+        );
+      });
+
+      test('required card metadata is present and source-specific metadata survives expansion', () => {
+        for (const card of GRADE_7_CARDS) {
+          for (const field of ['id', 'syllabusItemId', 'group', 'category', 'name', 'spokenName', 'form', 'octaves', 'hands', 'motion', 'recommendedTempoQpm', 'articulation', 'dynamic']) {
+            ok(Object.hasOwn(card, field), `${card.id} has ${field}`);
+          }
+        }
+        const chromatic = cardsFor('chromatic-scale-lh-c-rh-e-flat')[0];
+        deepEqual(chromatic.startingPositions, { leftHand: 'C', rightHand: 'E-flat' }, 'chromatic starting positions');
+        equal(chromatic.motion, 'similar', 'chromatic motion');
+      });
+
+      test('generated cards pass content validation', () => {
+        equal(validateCards(GRADE_7_CARDS), true, 'card validation result');
+      });
+
+      const passed = results.filter((result) => result.passed).length;
+      const failed = results.length - passed;
+      for (const result of results) {
+        const item = document.createElement('li');
+        item.className = result.passed ? 'pass' : 'fail';
+        item.textContent = result.passed ? `PASS: ${result.name}` : `FAIL: ${result.name} — ${result.error}`;
+        output.append(item);
+      }
+      summary.textContent = `${passed}/${results.length} tests passed`;
+      summary.className = failed === 0 ? 'pass' : 'fail';
+      document.title = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+      window.__grade7SyllabusTestResult = { passed, failed, results };
+    </script>
+  </body>
+</html>
