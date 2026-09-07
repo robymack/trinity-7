@@ -47,6 +47,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible {
 .app-status[data-type="error"] { color: #9b312a; font-weight: 650; }
 
 .practice-view { display: grid; min-height: calc(100dvh - 11.4rem); grid-template-rows: 1fr auto; gap: 1rem; }
+.practice-view[hidden], .analytics-view[hidden] { display: none; }
 .practice-card { display: flex; flex-direction: column; justify-content: center; min-height: 18rem; padding: 1.55rem; border: 1px solid #d7dfd8; border-radius: 1.4rem; background: #fffefa; box-shadow: 0 15px 38px #17362f0d; }
 .card-category { margin: 0 0 .7rem; color: #6a796f; font-size: .76rem; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
 .card-name { margin: 0; font-size: clamp(2rem, 10vw, 3.9rem); line-height: 1.02; letter-spacing: -.065em; text-wrap: balance; }

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grade 7 navigation tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      .pass { color: #176b32; }
+      .fail { color: #a10f1f; }
+      iframe { width: 1px; height: 1px; border: 0; position: absolute; left: -9999px; }
+    </style>
+  </head>
+  <body>
+    <h1>Grade 7 navigation tests</h1>
+    <p id="summary">Loading app…</p>
+    <ul id="results"></ul>
+    <iframe id="app-frame" title="Application under test" src="../index.html"></iframe>
+
+    <script>
+      const results = [];
+      const summary = document.querySelector('#summary');
+      const output = document.querySelector('#results');
+
+      function test(name, callback) {
+        try {
+          callback();
+          results.push({ name, passed: true });
+        } catch (error) {
+          results.push({ name, passed: false, error: error.message });
+        }
+      }
+
+      function ok(value, message) {
+        if (!value) throw new Error(message);
+      }
+
+      document.querySelector('#app-frame').addEventListener('load', (event) => {
+        const frameWindow = event.currentTarget.contentWindow;
+        const documentUnderTest = event.currentTarget.contentDocument;
+        const runtimeErrors = [];
+        frameWindow.addEventListener('error', (error) => runtimeErrors.push(error.message));
+
+        const practiceTab = documentUnderTest.querySelector('#practice-tab');
+        const analyticsTab = documentUnderTest.querySelector('#analytics-tab');
+        const practiceView = documentUnderTest.querySelector('#practice-view');
+        const analyticsView = documentUnderTest.querySelector('#analytics-view');
+
+        test('Analytics tap changes the visible view and renders content', () => {
+          practiceTab.click();
+          analyticsTab.click();
+          ok(practiceView.hidden, 'practice view should be hidden');
+          ok(!analyticsView.hidden, 'analytics view should be visible');
+          ok(analyticsView.textContent.includes('Your practice'), 'analytics overview should render');
+        });
+
+        test('Practice tap returns to the visible practice view', () => {
+          practiceTab.click();
+          ok(!practiceView.hidden, 'practice view should be visible');
+          ok(analyticsView.hidden, 'analytics view should be hidden');
+        });
+
+        test('Navigation produces no uncaught runtime error', () => {
+          ok(runtimeErrors.length === 0, runtimeErrors.join('; '));
+        });
+
+        const passed = results.filter((result) => result.passed).length;
+        const failed = results.length - passed;
+        for (const result of results) {
+          const item = document.createElement('li');
+          item.className = result.passed ? 'pass' : 'fail';
+          item.textContent = result.passed ? `PASS: ${result.name}` : `FAIL: ${result.name} — ${result.error}`;
+          output.append(item);
+        }
+        summary.textContent = `${passed}/${results.length} tests passed`;
+        summary.className = failed === 0 ? 'pass' : 'fail';
+        document.title = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+        window.__grade7NavigationTestResult = { passed, failed, results };
+      });
+    </script>
+  </body>
+</html>

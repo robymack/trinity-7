@@ -11,7 +11,10 @@ function average(values) {
 }
 
 function attemptsFor(state, cardId) {
-  return Array.isArray(state.attempts[cardId]) ? state.attempts[cardId] : [];
+  const attempts = state?.attempts?.[cardId];
+  return Array.isArray(attempts)
+    ? attempts.filter((attempt) => Number.isFinite(attempt?.score))
+    : [];
 }
 
 function summaryForAttempts(attempts) {
@@ -71,7 +74,7 @@ export function buildAnalytics(cards, state) {
   return {
     totalAttempts: allAttempts.length,
     overallAverage: average(allAttempts.map((attempt) => attempt.score)),
-    introducedCards: cards.filter((card) => state.states[card.id]?.introduced).length,
+    introducedCards: cards.filter((card) => state?.states?.[card.id]?.introduced).length,
     attemptedCards: cards.filter((card) => attemptsFor(state, card.id).length > 0).length,
     items,
     exactCards,

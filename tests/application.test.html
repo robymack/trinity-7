@@ -168,6 +168,25 @@
         ok(analytics.dynamics.every((entry) => 'attemptCount' in entry), 'dynamic aggregation');
       });
 
+      test('analytics tolerates a fresh install with no attempts', () => {
+        const analytics = buildAnalytics(GRADE_7_CARDS, createInitialAppState(cardIds, seededRng(24)));
+        equal(analytics.totalAttempts, 0, 'fresh total attempts');
+        equal(analytics.overallAverage, null, 'fresh overall average');
+        equal(analytics.attemptedCards, 0, 'fresh attempted cards');
+        ok(analytics.items.every((item) => item.average === null && item.attemptCount === 0), 'fresh item empty states');
+      });
+
+      test('analytics tolerates partially populated optional state', () => {
+        const card = GRADE_7_CARDS[0];
+        const analytics = buildAnalytics(GRADE_7_CARDS, {
+          attempts: { [card.id]: [{ score: 8 }, {}] },
+        });
+        equal(analytics.totalAttempts, 1, 'only valid recorded score is counted');
+        equal(analytics.overallAverage, 8, 'partial state average');
+        equal(analytics.introducedCards, 0, 'missing states remain unintroduced');
+        equal(analytics.attemptedCards, 1, 'partially attempted card remains visible');
+      });
+
       test('speech wording is intentional and speech failure leaves practice usable', () => {
         const card = GRADE_7_CARDS.find((entry) => entry.id === 'scale:e-major-scale:legato:mf');
         equal(buildSpokenInstruction(card), 'E major scale. Legato. Mezzo-forte.', 'spoken wording');
