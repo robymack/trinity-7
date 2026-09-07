@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grade 7 scheduler tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      .pass { color: #176b32; }
+      .fail { color: #a10f1f; }
+      li { margin-block: 0.4rem; }
+      #simulations { margin-top: 2rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Grade 7 scheduler tests</h1>
+    <p id="summary">Running…</p>
+    <ul id="results"></ul>
+    <section id="simulations">
+      <h2>Seeded simulation statistics</h2>
+      <ul id="simulation-results"></ul>
+    </section>
+
+    <script type="module">
+      import { GRADE_7_CARDS } from '../syllabus.js';
+      import {
+        SCHEDULER_CONFIG,
+        advanceIntroductionQueue,
+        calculateEffectiveScore,
+        calculateRecencyFactor,
+        calculateSelectionWeight,
+        calculateWeakness,
+        createIntroductionQueue,
+        enqueueUrgentRetry,
+        isUrgentRetryScore,
+        selectNextCard,
+        selectWeightedCard,
+      } from '../scheduler.js';
+
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      const NOW = 1_800_000_000_000;
+      const results = [];
+      const simulationStats = [];
+
+      function seededRng(seed) {
+        let state = seed >>> 0;
+        return () => {
+          state = (state * 1664525 + 1013904223) >>> 0;
+          return state / 4294967296;
+        };
+      }
+
+      function equal(actual, expected, message) {
+        if (actual !== expected) {
+          throw new Error(`${message}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+        }
+      }
+
+      function approximately(actual, expected, tolerance, message) {
+        if (Math.abs(actual - expected) > tolerance) {
+          throw new Error(`${message}: expected approximately ${expected}, received ${actual}`);
+        }
+      }
+
+      function ok(value, message) {
+        if (!value) throw new Error(message);
+      }
+
+      function test(name, callback) {
+        try {
+          callback();
+          results.push({ name, passed: true });
+        } catch (error) {
+          results.push({ name, passed: false, error: error.message });
+        }
+      }
+
+      function cardState(cardId, overrides = {}) {
+        return {
+          cardId,
+          introduced: true,
+          attemptCount: 10,
+          historicalAverage: 8,
+          mostRecentScore: 8,
+          lastPlayedAt: NOW - DAY,
+          ...overrides,
+        };
+      }
+
+      function simulateSelections(states, seed, totalSelections = 10000) {
+        const rng = seededRng(seed);
+        const counts = Object.fromEntries(states.map((state) => [state.cardId, 0]));
+        let lastCardId = null;
+        let simulatedNow = NOW;
+
+        for (let turn = 0; turn < totalSelections; turn += 1) {
+          const selection = selectNextCard({ cardStates: states, lastCardId }, simulatedNow, rng);
+          ok(selection.cardId !== null, `simulation became stuck on turn ${turn}`);
+          counts[selection.cardId] += 1;
+          const selectedState = states.find((state) => state.cardId === selection.cardId);
+          selectedState.lastPlayedAt = simulatedNow;
+          lastCardId = selection.cardId;
+          simulatedNow += 60 * 1000;
+        }
+        return counts;
+      }
+
+      test('a 122-card introduction queue contains every card exactly once', () => {
+        const ids = GRADE_7_CARDS.map((card) => card.id);
+        const queue = createIntroductionQueue(ids, seededRng(7));
+        equal(queue.length, 122, 'queue length');
+        equal(new Set(queue).size, 122, 'unique queue IDs');
+        equal(new Set(queue).size, new Set(ids).size, 'all card IDs retained');
+      });
+
+      test('introduction queue shuffling is deterministic with a supplied RNG', () => {
+        const ids = GRADE_7_CARDS.map((card) => card.id);
+        const first = createIntroductionQueue(ids, seededRng(91));
+        const second = createIntroductionQueue(ids, seededRng(91));
+        equal(JSON.stringify(first), JSON.stringify(second), 'identical seeded queues');
+      });
+
+      test('introduction queue advances without mutating the original queue', () => {
+        const queue = ['a', 'b'];
+        const next = advanceIntroductionQueue(queue, 0);
+        equal(next.position, 1, 'advanced position');
+        equal(next.cardId, 'b', 'next card');
+        equal(next.isComplete, false, 'completion before final card');
+        equal(queue.join(','), 'a,b', 'original queue');
+        equal(advanceIntroductionQueue(queue, 1).isComplete, true, 'completion after final card');
+      });
+
+      test('effective score uses the most recent score fully for one attempt', () => {
+        equal(calculateEffectiveScore(cardState('one', { attemptCount: 1, historicalAverage: 8, mostRecentScore: 3 })), 3, 'one-attempt score');
+      });
+
+      test('effective score gives a recent result modest influence after multiple attempts', () => {
+        approximately(
+          calculateEffectiveScore(cardState('recent', { historicalAverage: 8, mostRecentScore: 2 })),
+          6.8,
+          0.000001,
+          'effective score',
+        );
+      });
+
+      test('poor cards receive a higher normal weight than strong cards', () => {
+        const poor = cardState('poor', { historicalAverage: 3, mostRecentScore: 3 });
+        const strong = cardState('strong', { historicalAverage: 9, mostRecentScore: 9 });
+        ok(calculateSelectionWeight(poor, NOW) > calculateSelectionWeight(strong, NOW), 'poor card has higher weight');
+        equal(calculateWeakness(strong), 2, 'strong weakness remains positive');
+      });
+
+      test('strong cards retain a non-zero weight and old cards gain recency weight', () => {
+        const strongRecent = cardState('strong-recent', { historicalAverage: 10, mostRecentScore: 10, lastPlayedAt: NOW });
+        const strongOld = cardState('strong-old', { historicalAverage: 10, mostRecentScore: 10, lastPlayedAt: NOW - DAY });
+        ok(calculateSelectionWeight(strongRecent, NOW) >= SCHEDULER_CONFIG.minimumSelectionWeight, 'strong weight is non-zero');
+        equal(calculateRecencyFactor(strongRecent, NOW), 0, 'recent recency');
+        equal(calculateRecencyFactor(strongOld, NOW), 1, 'old recency cap');
+        ok(calculateSelectionWeight(strongOld, NOW) > calculateSelectionWeight(strongRecent, NOW), 'old strong card gains weight');
+      });
+
+      test('scores 1–3 enter urgent retry and scores above 3 do not', () => {
+        for (const score of [1, 2, 3]) {
+          ok(isUrgentRetryScore(score), `${score} is urgent`);
+          const queue = enqueueUrgentRetry([], 'failed', score, 5, () => 0);
+          equal(queue.length, 1, `${score} queue length`);
+          equal(queue[0].eligibleAfterScoreCount, 7, `${score} earliest retry point`);
+        }
+        ok(!isUrgentRetryScore(4), '4 is not urgent');
+        equal(enqueueUrgentRetry([], 'not-failed', 4, 5, () => 0).length, 0, '4 does not enter queue');
+      });
+
+      test('urgent retry returns after two to four scored cards and not immediately', () => {
+        const states = ['failed', 'b', 'c', 'd', 'e'].map((id) => cardState(id));
+        const retryQueue = enqueueUrgentRetry([], 'failed', 2, 10, () => 0);
+        const first = selectNextCard({ cardStates: states, retryQueue, lastCardId: 'failed', completedScoreCount: 10 }, NOW, () => 0);
+        equal(first.source, 'normal', 'retry is not immediate');
+        const beforeEligibility = selectNextCard({ cardStates: states, retryQueue, lastCardId: first.cardId, completedScoreCount: 11 }, NOW, () => 0);
+        equal(beforeEligibility.source, 'normal', 'retry waits through one intervening score');
+        const eligible = selectNextCard({ cardStates: states, retryQueue, lastCardId: beforeEligibility.cardId, completedScoreCount: 12 }, NOW, () => 0);
+        equal(eligible.cardId, 'failed', 'retry at the two-card delay');
+        equal(eligible.source, 'urgent-retry', 'urgent retry source');
+        equal(eligible.retryQueue.length, 0, 'retry is removed after selection');
+      });
+
+      test('eligible urgent retries take priority and multiple retries are chosen with RNG', () => {
+        const states = ['a', 'b', 'c'].map((id) => cardState(id));
+        const retryQueue = [
+          { cardId: 'a', eligibleAfterScoreCount: 0 },
+          { cardId: 'b', eligibleAfterScoreCount: 0 },
+        ];
+        const selection = selectNextCard({ cardStates: states, retryQueue, completedScoreCount: 0 }, NOW, () => 0.99);
+        equal(selection.source, 'urgent-retry', 'urgent source');
+        equal(selection.cardId, 'b', 'RNG chooses a later retry candidate');
+      });
+
+      test('immediate repetition is avoided when an alternative exists', () => {
+        const states = ['a', 'b'].map((id) => cardState(id));
+        const selection = selectNextCard({ cardStates: states, lastCardId: 'a' }, NOW, () => 0);
+        equal(selection.cardId, 'b', 'alternative card selected');
+      });
+
+      test('weighted selection varies with its injected RNG', () => {
+        const candidates = [{ cardId: 'a', weight: 1 }, { cardId: 'b', weight: 1 }];
+        equal(selectWeightedCard(candidates, () => 0).cardId, 'a', 'low RNG selection');
+        equal(selectWeightedCard(candidates, () => 0.99).cardId, 'b', 'high RNG selection');
+      });
+
+      test('normal selection excludes unintroduced cards and never becomes stuck for a one-card deck', () => {
+        const states = [
+          cardState('introduced'),
+          cardState('new', { introduced: false, attemptCount: 0, historicalAverage: null, mostRecentScore: null }),
+        ];
+        equal(selectNextCard({ cardStates: states }, NOW, () => 0).cardId, 'introduced', 'new card excluded from normal pool');
+        equal(selectNextCard({ cardStates: [cardState('only')], lastCardId: 'only' }, NOW, () => 0).cardId, 'only', 'one-card fallback');
+      });
+
+      test('edge-case inputs return sensible values', () => {
+        equal(calculateEffectiveScore(cardState('empty', { attemptCount: 0, historicalAverage: null, mostRecentScore: null })), null, 'no-attempt effective score');
+        equal(calculateRecencyFactor(cardState('future', { lastPlayedAt: NOW + HOUR }), NOW), 0, 'future timestamp is not overdue');
+        equal(selectNextCard({}, NOW, () => 0).source, 'none', 'empty scheduler input');
+      });
+
+      const weakDeck = GRADE_7_CARDS.map((card, index) => cardState(card.id, {
+        historicalAverage: index < 5 ? 3 : 8,
+        mostRecentScore: index < 5 ? 3 : 8,
+      }));
+      const weakCounts = simulateSelections(weakDeck, 1001);
+      const weakIds = weakDeck.slice(0, 5).map((state) => state.cardId);
+      const strongIds = weakDeck.slice(5).map((state) => state.cardId);
+      const weakTotal = weakIds.reduce((sum, id) => sum + weakCounts[id], 0);
+      const strongTotal = strongIds.reduce((sum, id) => sum + weakCounts[id], 0);
+      const weakAverage = weakTotal / weakIds.length;
+      const strongAverage = strongTotal / strongIds.length;
+      test('simulation A: weak minority is selected substantially more often', () => {
+        ok(weakAverage > strongAverage * 2, `weak per-card average ${weakAverage} is not more than double ${strongAverage}`);
+      });
+      simulationStats.push(`A — weak cards: ${weakTotal}/10,000 total; ${weakAverage.toFixed(1)} per weak card vs ${strongAverage.toFixed(1)} per strong card.`);
+
+      const rotationDeck = GRADE_7_CARDS.map((card, index) => cardState(card.id, {
+        historicalAverage: index < 5 ? 9.5 : 6,
+        mostRecentScore: index < 5 ? 9.5 : 6,
+      }));
+      const rotationCounts = simulateSelections(rotationDeck, 2002);
+      const rotatingStrongIds = rotationDeck.slice(0, 5).map((state) => state.cardId);
+      const rotatingStrongTotal = rotatingStrongIds.reduce((sum, id) => sum + rotationCounts[id], 0);
+      test('simulation B: strong cards still rotate periodically', () => {
+        ok(rotatingStrongIds.every((id) => rotationCounts[id] > 0), 'every strong card appears');
+        ok(rotatingStrongTotal >= 25, `strong cards appeared only ${rotatingStrongTotal} times`);
+      });
+      simulationStats.push(`B — five strong cards appeared ${rotatingStrongTotal} times in 10,000 selections (each appeared at least once).`);
+
+      const failedState = cardState('recent-failure', { historicalAverage: 8, mostRecentScore: 2 });
+      const failedQueue = enqueueUrgentRetry([], failedState.cardId, 2, 40, () => 0.5);
+      const urgentAt = selectNextCard({
+        cardStates: [failedState, ...['x', 'y', 'z', 'q'].map((id) => cardState(id))],
+        retryQueue: failedQueue,
+        lastCardId: 'y',
+        completedScoreCount: failedQueue[0].eligibleAfterScoreCount,
+      }, NOW, () => 0);
+      test('simulation C: a new score of 2 receives an urgent retry in-window', () => {
+        equal(failedQueue[0].eligibleAfterScoreCount - 40, 3, 'seeded retry delay');
+        equal(urgentAt.cardId, 'recent-failure', 'urgent retry selection');
+      });
+      simulationStats.push(`C — average-8 card with new score 2 received a seeded urgent retry after ${failedQueue[0].eligibleAfterScoreCount - 40} intervening scored cards.`);
+
+      const recencyRecent = cardState('recent-strong', { historicalAverage: 9.5, mostRecentScore: 9.5, lastPlayedAt: NOW });
+      const recencyOld = cardState('old-strong', { historicalAverage: 9.5, mostRecentScore: 9.5, lastPlayedAt: NOW - DAY });
+      const recentWeight = calculateSelectionWeight(recencyRecent, NOW);
+      const oldWeight = calculateSelectionWeight(recencyOld, NOW);
+      test('simulation D: an old strong card gains normal likelihood through recency', () => {
+        ok(oldWeight > recentWeight, 'old strong card weight increases');
+      });
+      simulationStats.push(`D — strong-card weight rises from ${recentWeight.toFixed(2)} when recent to ${oldWeight.toFixed(2)} after 24 hours.`);
+
+      const varietyDeckA = GRADE_7_CARDS.slice(0, 12).map((card) => cardState(card.id));
+      const varietyDeckB = GRADE_7_CARDS.slice(0, 12).map((card) => cardState(card.id));
+      const sequence = (states, seed) => {
+        const rng = seededRng(seed);
+        let lastCardId = null;
+        return Array.from({ length: 20 }, () => {
+          const selection = selectNextCard({ cardStates: states, lastCardId }, NOW, rng);
+          lastCardId = selection.cardId;
+          return selection.cardId;
+        });
+      };
+      const sequenceA = sequence(varietyDeckA, 12);
+      const sequenceB = sequence(varietyDeckB, 13);
+      test('simulation E: different seeds produce varied practice order', () => {
+        ok(JSON.stringify(sequenceA) !== JSON.stringify(sequenceB), 'different seeds should not produce the same order');
+        ok(new Set(sequenceA).size > 1, 'one sequence contains variety');
+      });
+      simulationStats.push(`E — first 20 selections differed for seeds 12 and 13; seed 12 used ${new Set(sequenceA).size} distinct cards.`);
+
+      const resultOutput = document.querySelector('#results');
+      const passed = results.filter((result) => result.passed).length;
+      const failed = results.length - passed;
+      for (const result of results) {
+        const item = document.createElement('li');
+        item.className = result.passed ? 'pass' : 'fail';
+        item.textContent = result.passed ? `PASS: ${result.name}` : `FAIL: ${result.name} — ${result.error}`;
+        resultOutput.append(item);
+      }
+
+      for (const statistic of simulationStats) {
+        const item = document.createElement('li');
+        item.textContent = statistic;
+        document.querySelector('#simulation-results').append(item);
+      }
+
+      const summary = document.querySelector('#summary');
+      summary.textContent = `${passed}/${results.length} tests passed`;
+      summary.className = failed === 0 ? 'pass' : 'fail';
+      document.title = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+      window.__grade7SchedulerTestResult = { passed, failed, results, simulationStats };
+    </script>
+  </body>
+</html>

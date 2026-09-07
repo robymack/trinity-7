@@ -1,0 +1,23 @@
+{
+  "name": "Trinity Grade 7 Scales",
+  "short_name": "Grade 7 Scales",
+  "description": "Offline Trinity Grade 7 Piano scales and arpeggios practice.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#edf2ec",
+  "theme_color": "#17362f",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

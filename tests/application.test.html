@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grade 7 application tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      .pass { color: #176b32; }
+      .fail { color: #a10f1f; }
+      li { margin-block: .4rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Grade 7 application tests</h1>
+    <p id="summary">Running…</p>
+    <ul id="results"></ul>
+
+    <script type="module">
+      import { buildAnalytics } from '../analytics.js';
+      import { ensureActivePrompt, scorePrompt } from '../practice.js';
+      import {
+        STORAGE_KEY,
+        createInitialAppState,
+        getTotalAttemptCount,
+        loadAppState,
+        resetAppState,
+        saveAppState,
+        summariseAttempts,
+      } from '../storage.js';
+      import { buildSpokenInstruction, selectPreferredVoice, speakCard } from '../speech.js';
+      import { GRADE_7_CARDS } from '../syllabus.js';
+
+      const NOW = 1_800_000_000_000;
+      const cardIds = GRADE_7_CARDS.map((card) => card.id);
+      const results = [];
+
+      class MemoryStorage {
+        constructor() { this.values = new Map(); }
+        getItem(key) { return this.values.has(key) ? this.values.get(key) : null; }
+        setItem(key, value) { this.values.set(key, value); }
+      }
+
+      function seededRng(seed) {
+        let state = seed >>> 0;
+        return () => {
+          state = (state * 1664525 + 1013904223) >>> 0;
+          return state / 4294967296;
+        };
+      }
+
+      function equal(actual, expected, message) {
+        if (actual !== expected) throw new Error(`${message}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+      }
+
+      function ok(value, message) {
+        if (!value) throw new Error(message);
+      }
+
+      function test(name, callback) {
+        try {
+          callback();
+          results.push({ name, passed: true });
+        } catch (error) {
+          results.push({ name, passed: false, error: error.message });
+        }
+      }
+
+      test('initial local state has complete queue, empty history, and safe defaults', () => {
+        const state = createInitialAppState(cardIds, seededRng(1));
+        equal(state.introductionQueue.length, 122, 'queue length');
+        equal(Object.keys(state.attempts).length, 122, 'attempt maps');
+        equal(getTotalAttemptCount(state), 0, 'initial attempts');
+        equal(state.settings.speechEnabled, true, 'speech default');
+      });
+
+      test('active prompt is persisted and restored without changing it', () => {
+        const storage = new MemoryStorage();
+        const initial = ensureActivePrompt(createInitialAppState(cardIds, seededRng(2)), NOW, seededRng(3));
+        saveAppState(storage, initial);
+        const restored = loadAppState(storage, cardIds, seededRng(4));
+        equal(restored.activePromptCardId, initial.activePromptCardId, 'restored active prompt');
+        equal(restored.states[initial.activePromptCardId].introduced, true, 'active card introduced');
+      });
+
+      test('scoring appends full history, advances the introduction queue, and selects the next prompt', () => {
+        let state = ensureActivePrompt(createInitialAppState(cardIds, seededRng(5)), NOW, seededRng(6));
+        const firstCardId = state.activePromptCardId;
+        state = scorePrompt(state, firstCardId, 8, NOW + 1, seededRng(7));
+        equal(state.attempts[firstCardId].length, 1, 'first stored attempt');
+        equal(state.attempts[firstCardId][0].score, 8, 'stored score');
+        equal(state.states[firstCardId].historicalAverage, 8, 'average score');
+        equal(state.introductionPosition, 1, 'introduction advancement');
+        ok(state.activePromptCardId !== firstCardId, 'next prompt selected');
+      });
+
+      test('a stale score event is rejected instead of scoring the next prompt', () => {
+        let state = ensureActivePrompt(createInitialAppState(cardIds, seededRng(8)), NOW, seededRng(9));
+        const firstCardId = state.activePromptCardId;
+        state = scorePrompt(state, firstCardId, 7, NOW + 1, seededRng(10));
+        let rejected = false;
+        try { scorePrompt(state, firstCardId, 7, NOW + 2, seededRng(11)); } catch { rejected = true; }
+        ok(rejected, 'stale score must be rejected');
+      });
+
+      test('urgent retries survive persistence and retain a two-to-four score delay', () => {
+        const storage = new MemoryStorage();
+        let state = ensureActivePrompt(createInitialAppState(cardIds, seededRng(12)), NOW, seededRng(13));
+        const failedCardId = state.activePromptCardId;
+        state = scorePrompt(state, failedCardId, 2, NOW + 1, () => 0.5);
+        equal(state.retryQueue.length, 1, 'urgent retry entry');
+        const retry = state.retryQueue[0];
+        const delay = retry.eligibleAfterScoreCount - getTotalAttemptCount(state);
+        ok(delay >= 2 && delay <= 4, `retry delay ${delay}`);
+        saveAppState(storage, state);
+        const restored = loadAppState(storage, cardIds, seededRng(14));
+        equal(restored.retryQueue[0].cardId, failedCardId, 'retry card restored');
+        equal(restored.retryQueue[0].eligibleAfterScoreCount, retry.eligibleAfterScoreCount, 'retry target restored');
+      });
+
+      test('reset clears practice data while retaining the complete syllabus queue', () => {
+        const storage = new MemoryStorage();
+        let state = ensureActivePrompt(createInitialAppState(cardIds, seededRng(15)), NOW, seededRng(16));
+        state = scorePrompt(state, state.activePromptCardId, 3, NOW + 1, seededRng(17));
+        saveAppState(storage, state);
+        const reset = resetAppState(storage, cardIds, seededRng(18));
+        equal(getTotalAttemptCount(reset), 0, 'reset attempts');
+        equal(reset.retryQueue.length, 0, 'reset retries');
+        equal(reset.activePromptCardId, null, 'reset active prompt');
+        equal(reset.introductionQueue.length, 122, 'reset queue');
+      });
+
+      test('malformed local storage does not crash and creates usable fresh state', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(STORAGE_KEY, '{not valid JSON');
+        const state = loadAppState(storage, cardIds, seededRng(19));
+        equal(state.version, 1, 'current version');
+        equal(state.introductionQueue.length, 122, 'fresh queue');
+      });
+
+      test('attempt summaries retain all scores and calculate the true average', () => {
+        const summary = summariseAttempts('card', [
+          { score: 4, timestamp: NOW },
+          { score: 10, timestamp: NOW + 2 },
+          { score: 7, timestamp: NOW + 1 },
+        ]);
+        equal(summary.attemptCount, 3, 'attempt count');
+        equal(summary.historicalAverage, 7, 'historical average');
+        equal(summary.mostRecentScore, 10, 'latest score');
+      });
+
+      test('analytics aggregates overall, item, articulation, and dynamic scores locally', () => {
+        const state = createInitialAppState(cardIds, seededRng(20));
+        const first = GRADE_7_CARDS[0];
+        const second = GRADE_7_CARDS[1];
+        state.attempts[first.id] = [{ score: 4, timestamp: NOW }, { score: 6, timestamp: NOW + 1 }];
+        state.attempts[second.id] = [{ score: 8, timestamp: NOW + 2 }];
+        state.states[first.id] = summariseAttempts(first.id, state.attempts[first.id]);
+        state.states[second.id] = summariseAttempts(second.id, state.attempts[second.id]);
+        const analytics = buildAnalytics(GRADE_7_CARDS, state);
+        equal(analytics.totalAttempts, 3, 'total attempts');
+        equal(analytics.overallAverage, 6, 'overall average');
+        equal(analytics.attemptedCards, 2, 'attempted cards');
+        const firstItem = analytics.items.find((item) => item.itemId === first.syllabusItemId);
+        equal(firstItem.attemptCount, 3, 'item attempts');
+        equal(firstItem.average, 6, 'item average');
+        ok(analytics.articulation.every((entry) => 'attemptCount' in entry), 'articulation aggregation');
+        ok(analytics.dynamics.every((entry) => 'attemptCount' in entry), 'dynamic aggregation');
+      });
+
+      test('speech wording is intentional and speech failure leaves practice usable', () => {
+        const card = GRADE_7_CARDS.find((entry) => entry.id === 'scale:e-major-scale:legato:mf');
+        equal(buildSpokenInstruction(card), 'E major scale. Legato. Mezzo-forte.', 'spoken wording');
+        const result = speakCard(card, { synth: false, Utterance: false });
+        equal(result.spoken, false, 'unavailable speech result');
+        const voice = selectPreferredVoice([
+          { name: 'Generic English', lang: 'en-US', localService: true },
+          { name: 'Hazel', lang: 'en-GB', localService: true },
+        ]);
+        equal(voice.name, 'Hazel', 'preferred local British voice');
+      });
+
+      test('scheduler state remains storage-ready after a normal score', () => {
+        let state = ensureActivePrompt(createInitialAppState(cardIds, seededRng(21)), NOW, seededRng(22));
+        state = scorePrompt(state, state.activePromptCardId, 9, NOW + 1, seededRng(23));
+        equal(state.retryQueue.length, 0, 'normal score does not add retry');
+        ok(state.activePromptCardId !== null, 'next active prompt is ready to persist');
+      });
+
+      const output = document.querySelector('#results');
+      const passed = results.filter((result) => result.passed).length;
+      const failed = results.length - passed;
+      for (const result of results) {
+        const item = document.createElement('li');
+        item.className = result.passed ? 'pass' : 'fail';
+        item.textContent = result.passed ? `PASS: ${result.name}` : `FAIL: ${result.name} — ${result.error}`;
+        output.append(item);
+      }
+      const summary = document.querySelector('#summary');
+      summary.textContent = `${passed}/${results.length} tests passed`;
+      summary.className = failed === 0 ? 'pass' : 'fail';
+      document.title = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+      window.__grade7ApplicationTestResult = { passed, failed, results };
+    </script>
+  </body>
+</html>
