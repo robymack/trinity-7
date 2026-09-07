@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grade 7 service-worker tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; }
+      .pass { color: #176b32; }
+      .fail { color: #a10f1f; }
+      li { margin-block: .4rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Grade 7 service-worker tests</h1>
+    <p id="summary">Running…</p>
+    <ul id="results"></ul>
+
+    <script type="module">
+      const results = [];
+      const output = document.querySelector('#results');
+      const summary = document.querySelector('#summary');
+
+      function ok(value, message) {
+        if (!value) throw new Error(message);
+      }
+
+      function equal(actual, expected, message) {
+        if (actual !== expected) throw new Error(`${message}: expected ${expected}, received ${actual}`);
+      }
+
+      async function test(name, callback) {
+        try {
+          await callback();
+          results.push({ name, passed: true });
+        } catch (error) {
+          results.push({ name, passed: false, error: error.message });
+        }
+      }
+
+      const origin = 'https://example.test';
+      const workerSource = await fetch('../sw.js').then((response) => response.text());
+      const appSource = await fetch('../app.js').then((response) => response.text());
+      const listeners = new Map();
+      const entries = new Map();
+      const deletedCaches = [];
+      let openedCacheName = null;
+      let skipWaitingCalled = false;
+      let clientsClaimed = false;
+
+      const cache = {
+        async addAll(paths) {
+          paths.forEach((path) => entries.set(new URL(path, `${origin}/`).href, { path }));
+        },
+        async match(request) {
+          const url = typeof request === 'string'
+            ? new URL(request, `${origin}/`).href
+            : request.url;
+          return entries.get(url);
+        },
+      };
+      const caches = {
+        async open(name) { openedCacheName = name; return cache; },
+        async keys() { return [openedCacheName, 'trinity-grade-7-scales-obsolete']; },
+        async delete(name) { deletedCaches.push(name); return true; },
+        async match(request) { return cache.match(request); },
+      };
+      const self = {
+        location: { origin },
+        clients: { claim: async () => { clientsClaimed = true; } },
+        skipWaiting: async () => { skipWaitingCalled = true; },
+        addEventListener(type, listener) { listeners.set(type, listener); },
+      };
+
+      new Function('self', 'caches', 'fetch', 'URL', workerSource)(self, caches, () => Promise.reject(new Error('offline')), URL);
+
+      async function dispatch(type, event) {
+        const pending = [];
+        let responsePromise;
+        listeners.get(type)({
+          ...event,
+          waitUntil(promise) { pending.push(promise); },
+          respondWith(promise) { responsePromise = promise; },
+        });
+        await Promise.all(pending);
+        return responsePromise ? responsePromise : null;
+      }
+
+      await test('a new worker caches the complete shell and activates immediately', async () => {
+        await dispatch('install', {});
+        ok(openedCacheName?.startsWith('trinity-grade-7-scales-v'), 'versioned application cache');
+        ok(entries.has(`${origin}/index.html`), 'cached HTML');
+        ok(entries.has(`${origin}/styles.css`), 'cached CSS');
+        ok(entries.has(`${origin}/app.js`), 'cached application JavaScript');
+        ok(skipWaitingCalled, 'new worker skips the waiting state');
+      });
+
+      await test('activation removes old caches and claims open clients', async () => {
+        await dispatch('activate', {});
+        ok(deletedCaches.includes('trinity-grade-7-scales-obsolete'), 'obsolete cache removed');
+        ok(!deletedCaches.includes(openedCacheName), 'current cache retained');
+        ok(clientsClaimed, 'open clients are claimed');
+      });
+
+      await test('cached shell supports offline asset and navigation requests', async () => {
+        const asset = await dispatch('fetch', {
+          request: { method: 'GET', url: `${origin}/styles.css`, mode: 'cors' },
+        });
+        equal((await asset).path, './styles.css', 'offline cached stylesheet');
+
+        const navigation = await dispatch('fetch', {
+          request: { method: 'GET', url: `${origin}/practice`, mode: 'navigate' },
+        });
+        equal((await navigation).path, './index.html', 'offline navigation fallback');
+      });
+
+      await test('registration bypasses HTTP cache and reloads when a worker takes control', async () => {
+        ok(appSource.includes("updateViaCache: 'none'"), 'worker update bypasses HTTP cache');
+        ok(appSource.includes('registration.update()'), 'worker update is checked on launch');
+        ok(appSource.includes("addEventListener('controllerchange'"), 'controlled app reloads onto new shell');
+        ok(appSource.includes('wasControlled'), 'first installation does not unnecessarily reload');
+      });
+
+      const passed = results.filter((result) => result.passed).length;
+      const failed = results.length - passed;
+      results.forEach((result) => {
+        const item = document.createElement('li');
+        item.className = result.passed ? 'pass' : 'fail';
+        item.textContent = result.passed ? `PASS: ${result.name}` : `FAIL: ${result.name} — ${result.error}`;
+        output.append(item);
+      });
+      summary.textContent = `${passed}/${results.length} tests passed`;
+      summary.className = failed === 0 ? 'pass' : 'fail';
+      document.title = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+    </script>
+  </body>
+</html>

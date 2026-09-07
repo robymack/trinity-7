@@ -229,10 +229,20 @@ function resetHistory() {
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
+  const wasControlled = Boolean(navigator.serviceWorker.controller);
+  let reloadForUpdatedWorker = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!wasControlled || reloadForUpdatedWorker) return;
+    reloadForUpdatedWorker = true;
+    window.location.reload();
+  });
+
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {
-      // The app remains fully usable in the current browser tab without PWA installation.
-    });
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then((registration) => registration.update())
+      .catch(() => {
+        // The app remains fully usable in the current browser tab without PWA installation.
+      });
   });
 }
 
