@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trinity-grade-7-scales-v1';
+const CACHE_NAME = 'trinity-grade-7-scales-v2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -11,8 +11,9 @@ const APP_SHELL = [
   './analytics.js',
   './speech.js',
   './manifest.webmanifest',
-  './icons/icon.svg',
-  './icons/icon-maskable.svg',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
 ];
 
 self.addEventListener('install', (event) => {
